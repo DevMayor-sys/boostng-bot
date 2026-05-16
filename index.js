@@ -180,6 +180,67 @@ async function checkSMS(orderId) {
   } catch (e) { return null; }
 }
 
+// ─── Media Threat Scanner ────────────────────────────────────────────────────
+// Scans non-text messages for attacks
+function scanMedia(msg) {
+  if (!msg || !msg.message) return { safe: true };
+  var m = msg.message;
+
+  // vCard exploit — malicious contact cards
+  if (m.contactMessage || m.contactsArrayMessage) {
+    var name = (m.contactMessage && m.contactMessage.displayName) || '';
+    // Check for crash strings in contact name
+    for (var p of CRASH_CHECKS) {
+      try { if (p.pattern.test(name)) { STATS.threatsBlocked++; return { safe: false, type: 'vCard', warn: '⚠️ Malicious contact card blocked.' }; } } catch(e) {}
+    }
+  }
+
+  // Oversized media bomb
+  if (m.imageMessage) {
+    var size = m.imageMessage.fileLength || 0;
+    if (size > 15 * 1024 * 1024) { // 15MB
+      STATS.threatsBlocked++;
+      return { safe: false, type: 'Large Image', warn: '⚠️ Oversized image blocked.' };
+    }
+    // Check caption for crash text
+    var cap = m.imageMessage.caption || '';
+    for (var p2 of CRASH_CHECKS) {
+      try { if (p2.pattern.test(cap)) { STATS.threatsBlocked++; return { safe: false, type: 'Image Caption Attack', warn: '⚠️ Malicious image caption blocked.' }; } } catch(e) {}
+    }
+  }
+
+  if (m.videoMessage) {
+    var vsize = m.videoMessage.fileLength || 0;
+    if (vsize > 64 * 1024 * 1024) { // 64MB
+      STATS.threatsBlocked++;
+      return { safe: false, type: 'Large Video', warn: '⚠️ Oversized video blocked.' };
+    }
+  }
+
+  if (m.audioMessage) {
+    var asize = m.audioMessage.fileLength || 0;
+    if (asize > 10 * 1024 * 1024) { // 10MB audio
+      STATS.threatsBlocked++;
+      return { safe: false, type: 'Large Audio', warn: '⚠️ Oversized audio blocked.' };
+    }
+  }
+
+  // Sticker bomb — too many stickers too fast handled by spam limiter
+  // Document exploit — executable files
+  if (m.documentMessage) {
+    var fname = (m.documentMessage.fileName || '').toLowerCase();
+    var dangerousExt = ['.exe','.bat','.cmd','.sh','.apk','.js','.vbs','.ps1','.msi'];
+    for (var ext of dangerousExt) {
+      if (fname.endsWith(ext)) {
+        STATS.threatsBlocked++;
+        return { safe: false, type: 'Malicious File', warn: '⚠️ Dangerous file type blocked: ' + ext };
+      }
+    }
+  }
+
+  return { safe: true };
+}
+
 // ─── 17-Layer Security Scanner ────────────────────────────────────────────────
 var CRASH_CHECKS = [
   { name: 'Invisible Character Attack',      pattern: /[\u200B\u200C\u200D\u200E\u200F\uFEFF\u2028\u2029\u00AD\uFFF9\uFFFA\uFFFB]{3,}/ },
@@ -260,12 +321,13 @@ async function send(sock, jid, text, q) {
   try { await sock.sendMessage(jid, { text: text }, q ? { quoted: q } : {}); } catch (e) { console.error('[Send]', e.message); }
 }
 
-async function sendMenu(sock, jid, caption) {
+async function sendMenu(sock, jid, caption, isGroup) {
   try {
-    if (fs.existsSync(CONFIG.LOGO_PATH)) {
-      await sock.sendMessage(jid, { image: fs.readFileSync(CONFIG.LOGO_PATH), caption: caption, mimetype: 'image/jpeg' });
-    } else {
+    // Groups — text only (WhatsApp restricts image+caption in groups from linked devices)
+    if (isGroup || !fs.existsSync(CONFIG.LOGO_PATH)) {
       await sock.sendMessage(jid, { text: caption });
+    } else {
+      await sock.sendMessage(jid, { image: fs.readFileSync(CONFIG.LOGO_PATH), caption: caption, mimetype: 'image/jpeg' });
     }
   } catch (e) {
     try { await sock.sendMessage(jid, { text: caption }); } catch(e2) {}
@@ -411,6 +473,14 @@ async function handleGC(sock, jid, text, msg) {
   var isAdmin  = await isGroupAdmin(sock, jid, senderJid);
   var mentioned = getMentioned(msg);
 
+  // .pair works in GC too
+  if (/^\.pair\s+\+?\d+/i.test(raw)) { await handlePair(sock, jid, raw, msg); return; }
+  if (/^\.mode\s+(public|private)/i.test(raw)) {
+    BOT_MODE = raw.toLowerCase().includes('private') ? 'private' : 'public';
+    await send(sock, jid, wm('🌐 Bot switched to *' + BOT_MODE.toUpperCase() + ' MODE*'), msg);
+    return;
+  }
+
   // ── Anyone can use ──
   if (cmd === '!menu' || cmd === '!help') return send(sock, jid, T_gchelp(), msg);
   if (cmd === '!ping') { var t0 = Date.now(); return send(sock, jid, T_ping(Date.now() - t0), msg); }
@@ -526,18 +596,15 @@ async function handleGC(sock, jid, text, msg) {
 }
 
 // ─── Pairing — Mayor only, any number ────────────────────────────────────────
-async function handlePair(sock, jid, text) {
-  if (!CONFIG.OWNER_NUMBER || !jid.startsWith(CONFIG.OWNER_NUMBER)) {
-    return send(sock, jid, wm('🔒 Only *Mayor* can generate pairing codes.\n\nContact Mayor for help.'));
-  }
-  var m = text.match(/pair\s+\+?(\d{7,15})/i);
-  if (!m) return send(sock, jid, wm('❌ Format: *pair +2348012345678*\n\nYou can pair any number — staff, officers or anyone.'));
+async function handlePair(sock, jid, text, q) {
+  var m = text.match(/\.pair\s+\+?(\d{7,15})/i);
+  if (!m) return send(sock, jid, wm('❌ Format: *.pair 2348012345678*'), q);
   try {
     var code = await sock.requestPairingCode(m[1] + '@s.whatsapp.net');
     STATS.pairingsIssued++;
-    return send(sock, jid, wm('🔗 *Pairing Code Generated!*\n\n📱 Number: *+' + m[1] + '*\n🔑 Code: *' + code + '*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 Steps for that person:\n1. Open WhatsApp\n2. Menu → Linked Devices\n3. Link a Device\n4. "Link with phone number instead"\n5. Enter code above ✅\n━━━━━━━━━━━━━━━━━━━━━\n⏰ _Expires in 60 seconds!_'));
+    return send(sock, jid, wm('🔗 *Pairing Code!*\n\n📱 Number: *+' + m[1] + '*\n🔑 Code: *' + code + '*\n\n📋 Steps:\n1. Open WhatsApp\n2. Menu → Linked Devices\n3. Link a Device\n4. Link with phone number\n5. Enter code ✅\n\n⏰ _Expires in 60 seconds!_'), q);
   } catch (e) {
-    return send(sock, jid, wm('❌ Could not generate code.\nIs *+' + m[1] + '* on WhatsApp?'));
+    return send(sock, jid, wm('❌ Could not generate code for +' + m[1] + '\nIs that number on WhatsApp?'), q);
   }
 }
 
@@ -597,6 +664,18 @@ async function startBot() {
         var jid  = msg.key.remoteJid;
         var isGC = jid && jid.endsWith('@g.us');
         var text = (msg.message.conversation) || (msg.message.extendedTextMessage && msg.message.extendedTextMessage.text) || (msg.message.imageMessage && msg.message.imageMessage.caption) || '';
+
+        // Scan media even if no text
+        var mediaScan = scanMedia(msg);
+        if (!mediaScan.safe) {
+          console.warn('[MEDIA BLOCKED] ' + mediaScan.type + ' from ' + jid);
+          if (mediaScan.warn) await send(sock, jid, wm(mediaScan.warn));
+          if (mediaScan.type !== 'Large Image' && mediaScan.type !== 'Large Video') {
+            await reportThreat(sock, jid, mediaScan.type);
+          }
+          continue;
+        }
+
         if (!text) continue;
 
         var senderNum = jid.split('@')[0];
@@ -643,14 +722,14 @@ async function startBot() {
         // Anti-ban: natural delay before responding
         await naturalDelay(300, 800);
 
-        // Mayor commands
-        if (isOwner) {
-          if (/^pair\s+\+?\d+/i.test(text)) { await handlePair(sock, jid, text); continue; }
-          if (/^mode\s+(public|private)/i.test(text)) {
-            BOT_MODE = text.toLowerCase().includes('private') ? 'private' : 'public';
-            await send(sock, jid, wm('🌐 Bot switched to *' + BOT_MODE.toUpperCase() + ' MODE*'));
-            continue;
-          }
+        // .pair command — works from anywhere, no owner check needed
+        if (/^\.pair\s+\+?\d+/i.test(text)) { await handlePair(sock, jid, text, null); continue; }
+
+        // Mode switch — anyone who knows the command
+        if (/^\.mode\s+(public|private)/i.test(text)) {
+          BOT_MODE = text.toLowerCase().includes('private') ? 'private' : 'public';
+          await send(sock, jid, wm('🌐 Bot switched to *' + BOT_MODE.toUpperCase() + ' MODE*'));
+          continue;
         }
 
         // Private mode
@@ -689,6 +768,17 @@ http.createServer(async function(req, res) {
   var url    = require('url');
   var parsed = url.parse(req.url, true);
   var path   = parsed.pathname;
+
+  // ── GET /debug — check files ──
+  if (path === '/debug') {
+    var fs3 = require('fs');
+    var files = fs3.readdirSync('/app').filter(function(f){ return !f.startsWith('.') && f !== 'node_modules'; });
+    var logoExists = fs3.existsSync(CONFIG.LOGO_PATH);
+    var logoPath   = CONFIG.LOGO_PATH;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ files, logoExists, logoPath, cwd: process.cwd() }, null, 2));
+    return;
+  }
 
   // ── GET /qr — show QR code as image ──
   if (path === '/qr') {
