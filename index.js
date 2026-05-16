@@ -552,64 +552,21 @@ async function startBot() {
     browser          : ['BoostNG Assistant', 'Chrome', '120.0.0'],
   });
 
+  globalSock = sock;
   sock.ev.on('creds.update', saveCreds);
-
-  // Prompt user to type number for pairing code
-  var pairingShown = false;
-
-  // Read number from stdin (typed in Railway logs terminal)
-  function promptPairingNumber(sock) {
-    var readline = require('readline');
-    var rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('🔑 OPTION 2 — Get Pairing Code');
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('Type your WhatsApp number with country code');
-    console.log('Example: 2348012345678  (no + sign)');
-    console.log('Or press ENTER to skip and use QR only');
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    process.stdout.write('\n👉 Enter number: ');
-    rl.question('', async function(answer) {
-      rl.close();
-      var num = (answer || '').trim().replace(/[^0-9]/g, '');
-      if (!num) {
-        console.log('\n⏭️  Skipped — use QR code above to link\n');
-        return;
-      }
-      try {
-        var pairCode = await sock.requestPairingCode(num + '@s.whatsapp.net');
-        console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        console.log('✅ PAIRING CODE READY!');
-        console.log('');
-        console.log('   Number : +' + num);
-        console.log('   Code   : ' + pairCode);
-        console.log('');
-        console.log('Steps:');
-        console.log('  1. Open WhatsApp on that phone');
-        console.log('  2. Menu → Linked Devices → Link a Device');
-        console.log('  3. Tap "Link with phone number instead"');
-        console.log('  4. Enter the code above');
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-      } catch(e) {
-        console.log('\n❌ Could not generate code: ' + e.message);
-        console.log('Make sure the number is registered on WhatsApp\n');
-      }
-    });
-  }
 
   sock.ev.on('connection.update', async function(update) {
     var connection = update.connection, lastDisconnect = update.lastDisconnect, qr = update.qr;
     if (qr) {
       console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      console.log('📱 OPTION 1 — Scan QR Code:');
+      console.log('🔑 BOT NOT LINKED YET');
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('Open this URL in your browser to get pairing code:');
+      console.log('');
+      console.log('  YOUR_RAILWAY_URL/pair?number=2348012345678');
+      console.log('');
+      console.log('Replace 2348012345678 with your WhatsApp number');
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-      qrcode.generate(qr, { small: true });
-
-      // Prompt for pairing number once
-      if (!pairingShown) {
-        pairingShown = true;
-        setTimeout(function() { promptPairingNumber(sock); }, 1000);
-      }
     }
     if (connection === 'close') {
       var code = lastDisconnect && lastDisconnect.error && lastDisconnect.error.output ? lastDisconnect.error.output.statusCode : 0;
@@ -718,15 +675,124 @@ async function startBot() {
   });
 }
 
-// ─── Keep-alive HTTP ──────────────────────────────────────────────────────────
-http.createServer(function(req, res) {
+// ─── HTTP Server — keep-alive + pairing code UI ───────────────────────────────
+var globalSock = null;
+
+http.createServer(async function(req, res) {
+  var url    = require('url');
+  var parsed = url.parse(req.url, true);
+  var path   = parsed.pathname;
+
+  // ── GET /pair?number=2348012345678 ──
+  if (path === '/pair') {
+    var num = (parsed.query.number || '').replace(/[^0-9]/g, '');
+
+    // Show input form if no number provided
+    if (!num) {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(`<!DOCTYPE html>
+<html>
+<head>
+  <title>BoostNG Bot — Link WhatsApp</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#0d0d1a;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+    .card{background:#1a1a2e;border:1px solid rgba(0,232,122,0.2);border-radius:16px;padding:32px;max-width:400px;width:100%;text-align:center}
+    h1{color:#00e87a;font-size:22px;margin-bottom:8px}
+    p{color:rgba(255,255,255,0.5);font-size:13px;margin-bottom:24px}
+    input{width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:10px;padding:14px;color:#fff;font-size:16px;outline:none;margin-bottom:16px;text-align:center;letter-spacing:2px}
+    input:focus{border-color:#00e87a}
+    button{width:100%;background:#00e87a;border:none;color:#000;padding:14px;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer}
+    .hint{color:rgba(255,255,255,0.3);font-size:11px;margin-top:12px}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🔗 BoostNG Bot</h1>
+    <p>Enter your WhatsApp number to get a pairing code</p>
+    <form action="/pair" method="get">
+      <input name="number" placeholder="2348012345678" type="tel" autofocus>
+      <button type="submit">⚡ Get Pairing Code</button>
+    </form>
+    <div class="hint">Include country code, no + sign<br>Example: 2348012345678</div>
+  </div>
+</body>
+</html>`);
+      return;
+    }
+
+    // Generate pairing code
+    if (!globalSock) {
+      res.writeHead(503, { 'Content-Type': 'text/html' });
+      res.end('<h2 style="font-family:sans-serif;color:red;padding:40px">Bot is not ready yet. Wait 10 seconds and try again.</h2>');
+      return;
+    }
+
+    try {
+      var code = await globalSock.requestPairingCode(num + '@s.whatsapp.net');
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(`<!DOCTYPE html>
+<html>
+<head>
+  <title>BoostNG Bot — Pairing Code</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#0d0d1a;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+    .card{background:#1a1a2e;border:1px solid rgba(0,232,122,0.3);border-radius:16px;padding:32px;max-width:420px;width:100%;text-align:center}
+    h1{color:#00e87a;font-size:22px;margin-bottom:8px}
+    .code{font-size:42px;font-weight:900;color:#00e87a;letter-spacing:8px;margin:24px 0;font-family:monospace}
+    .num{color:rgba(255,255,255,0.4);font-size:13px;margin-bottom:24px}
+    .steps{background:rgba(0,232,122,0.06);border:1px solid rgba(0,232,122,0.15);border-radius:10px;padding:16px;text-align:left;font-size:13px;line-height:2;color:rgba(255,255,255,0.7)}
+    .warn{color:rgba(255,165,0,0.8);font-size:11px;margin-top:16px}
+    a{color:#00e87a;text-decoration:none;font-size:13px;display:block;margin-top:20px}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>✅ Pairing Code Ready!</h1>
+    <div class="num">Number: +${num}</div>
+    <div class="code">${code}</div>
+    <div class="steps">
+      1. Open WhatsApp on that phone<br>
+      2. Tap Menu (⋮) → Linked Devices<br>
+      3. Tap Link a Device<br>
+      4. Tap "Link with phone number instead"<br>
+      5. Enter the code above ✅
+    </div>
+    <div class="warn">⏰ Code expires in 60 seconds!</div>
+    <a href="/pair">← Generate another code</a>
+  </div>
+</body>
+</html>`);
+      console.log('[Pair] Code generated for +' + num + ': ' + code);
+      STATS.pairingsIssued++;
+    } catch(e) {
+      res.writeHead(400, { 'Content-Type': 'text/html' });
+      res.end('<div style="font-family:sans-serif;padding:40px;color:#ff6b6b"><h2>❌ Error: ' + e.message + '</h2><p>Make sure the number is registered on WhatsApp and try again.</p><a href="/pair" style="color:#00e87a">← Try again</a></div>');
+    }
+    return;
+  }
+
+  // ── GET / — status page ──
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({
-    status: 'online', bot: 'BoostNG Assistant v3', mode: BOT_MODE,
-    uptime: getUptime(), security: '17 layers', scanned: STATS.messagesScanned,
-    blocked: STATS.threatsBlocked, ai: STATS.aiReplies, pairings: STATS.pairingsIssued,
-    copy: '© 2026 Mayor Tech Inc — ALL RIGHTS RESERVED',
+    status  : 'online',
+    bot     : 'BoostNG Assistant v3',
+    mode    : BOT_MODE,
+    uptime  : getUptime(),
+    security: '17 layers',
+    scanned : STATS.messagesScanned,
+    blocked : STATS.threatsBlocked,
+    ai      : STATS.aiReplies,
+    pairings: STATS.pairingsIssued,
+    pair_url: 'Visit /pair to link WhatsApp',
+    copy    : '© 2026 Mayor Tech Inc — ALL RIGHTS RESERVED',
   }));
-}).listen(CONFIG.PORT, function() { console.log('[HTTP] Keep-alive on port', CONFIG.PORT); });
+}).listen(CONFIG.PORT, function() {
+  console.log('[HTTP] Server on port', CONFIG.PORT);
+  console.log('[HTTP] Pairing UI: YOUR_RAILWAY_URL/pair');
+});
 
 startBot().catch(console.error);
