@@ -71,6 +71,11 @@ function getUptime() {
   return m + 'm ' + s + 's';
 }
 
+// ─── Persistent owners ───────────────────────────────────────────────────────
+var MAIN_OWNER = (process.env.OWNER_NUMBER || '').replace(/[^0-9]/g, '');
+var OWNERS     = Store.loadOwners(MAIN_OWNER);
+var BLACKLIST  = Store.loadBlacklist();
+
 // ─── State ────────────────────────────────────────────────────────────────────
 var latestQR        = null; // stored for web display
 var verifiedUsers   = new Set();
@@ -122,6 +127,73 @@ async function reportThreat(sock, jid, reason) {
 async function naturalDelay(min, max) {
   var ms = min + Math.floor(Math.random() * (max - min));
   return new Promise(function(r) { setTimeout(r, ms); });
+}
+
+// ─── Permission helpers ───────────────────────────────────────────────────────
+function isOwner(jid) {
+  var num = (jid || '').split('@')[0].replace(/[^0-9]/g, '');
+  if (!num) return false;
+  // Check OWNERS set + MAIN_OWNER + OFFICER_NUMBERS env
+  if (OWNERS.has(num)) return true;
+  if (MAIN_OWNER && num === MAIN_OWNER) return true;
+  // Also check if it matches OWNER_NUMBER env directly
+  var envOwner = (process.env.OWNER_NUMBER || '').replace(/[^0-9]/g, '');
+  return envOwner && num === envOwner;
+}
+function isOfficer(jid) {
+  if (isOwner(jid)) return true;
+  var num = (jid || '').split('@')[0].replace(/[^0-9]/g, '');
+  var officers = (process.env.OFFICER_NUMBERS || '').split(',').map(function(n){ return n.replace(/[^0-9]/g,'').trim(); });
+  return officers.includes(num);
+}
+
+// ─── Owner commands handler ───────────────────────────────────────────────────
+async function handleOwnerCmd(sock, jid, text, msg) {
+  // Strip any prefix: . / ! space — accept any format
+  var clean = text.trim().replace(/^[./!\s]+/, '');
+  var lower  = clean.toLowerCase().replace(/[_\s-]+/g, '_');
+
+  // .pair / pair — any format
+  var pairMatch = clean.match(/pair\s+\+?(\d{7,15})/i);
+  if (pairMatch) {
+    try {
+      var code2 = await sock.requestPairingCode(pairMatch[1] + '@s.whatsapp.net');
+      return send(sock, jid, wm('🔗 *Pairing Code!*\n\n📱 Number: *+' + pairMatch[1] + '*\n🔑 Code: *' + code2 + '*\n\n1. Open WhatsApp\n2. Linked Devices → Link a Device\n3. Link with phone number\n4. Enter code ✅\n\n⏰ _Expires in 60s!_'), msg);
+    } catch(e) { return send(sock, jid, wm('❌ Could not pair +' + pairMatch[1] + '\nIs that number on WhatsApp?'), msg); }
+  }
+
+  // mode
+  if (/mode\s+(public|private)/i.test(clean)) {
+    BOT_MODE = clean.toLowerCase().includes('private') ? 'private' : 'public';
+    return send(sock, jid, wm('🌐 Bot switched to *' + BOT_MODE.toUpperCase() + ' MODE*'), msg);
+  }
+
+  // Add owner — accept: add_owner / addowner / add owner
+  var addMatch = clean.match(/add.?owner\s+\+?(\d{7,15})/i);
+  if (addMatch) {
+    var res = Store.addOwner(OWNERS, addMatch[1]);
+    if (res.ok) {
+      console.log('[Owner] Added: +' + res.number);
+      return send(sock, jid, wm('✅ *+' + res.number + '* added as owner!\n\nThey now have full owner permissions.'), msg);
+    }
+    return send(sock, jid, wm('❌ ' + res.reason), msg);
+  }
+
+  // Remove owner
+  var rmMatch = clean.match(/remove.?owner\s+\+?(\d{7,15})/i);
+  if (rmMatch) {
+    var rres = Store.removeOwner(OWNERS, rmMatch[1], MAIN_OWNER);
+    if (rres.ok) return send(sock, jid, wm('✅ *+' + rres.number + '* removed from owners.'), msg);
+    return send(sock, jid, wm('❌ ' + rres.reason), msg);
+  }
+
+  // List owners
+  if (/list.?owners?/i.test(clean)) {
+    var list = Array.from(OWNERS).map(function(n, i){ return (i+1)+'. +'+n+(n===MAIN_OWNER?' (Main)':''); }).join('\n');
+    return send(sock, jid, wm('👑 *Owners (' + OWNERS.size + ')*\n\n' + (list || 'None')), msg);
+  }
+
+  return false; // not an owner command
 }
 
 // ─── Groq AI ──────────────────────────────────────────────────────────────────
@@ -660,7 +732,8 @@ async function startBot() {
     for (var i = 0; i < upsert.messages.length; i++) {
       var msg = upsert.messages[i];
       try {
-        if (msg.key.fromMe || !msg.message) continue;
+        if (!msg.message) continue;
+        // Never skip — let owner use the bot from their own number
         var jid  = msg.key.remoteJid;
         var isGC = jid && jid.endsWith('@g.us');
         var text = (msg.message.conversation) || (msg.message.extendedTextMessage && msg.message.extendedTextMessage.text) || (msg.message.imageMessage && msg.message.imageMessage.caption) || '';
@@ -679,10 +752,10 @@ async function startBot() {
         if (!text) continue;
 
         var senderNum = jid.split('@')[0];
-        var isOwner   = CONFIG.OWNER_NUMBER && jid.startsWith(CONFIG.OWNER_NUMBER);
-        var isOfficer = isOwner || OFFICERS.has(senderNum);
+        var isOwnerFlag   = isOwner(senderJid);
+        var isOfficerFlag = isOfficer(senderJid);
 
-        console.log('[' + (isOwner ? '👑 MAYOR' : isOfficer ? '🎖️ OFFICER' : '👤 USER') + '] ' + text.slice(0, 50));
+        console.log('[' + (isOwnerFlag ? '👑' : isOfficerFlag ? '🎖️' : '👤') + '] ' + (senderJid||'').split('@')[0] + ': ' + text.slice(0, 50));
 
         // Groups
         if (isGC) {
