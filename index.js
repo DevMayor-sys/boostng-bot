@@ -554,8 +554,49 @@ async function startBot() {
 
   sock.ev.on('creds.update', saveCreds);
 
-  // Generate pairing code as soon as socket is ready
+  // Prompt user to type number for pairing code
   var pairingShown = false;
+
+  // Read number from stdin (typed in Railway logs terminal)
+  function promptPairingNumber(sock) {
+    var readline = require('readline');
+    var rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('🔑 OPTION 2 — Get Pairing Code');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('Type your WhatsApp number with country code');
+    console.log('Example: 2348012345678  (no + sign)');
+    console.log('Or press ENTER to skip and use QR only');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    process.stdout.write('\n👉 Enter number: ');
+    rl.question('', async function(answer) {
+      rl.close();
+      var num = (answer || '').trim().replace(/[^0-9]/g, '');
+      if (!num) {
+        console.log('\n⏭️  Skipped — use QR code above to link\n');
+        return;
+      }
+      try {
+        var pairCode = await sock.requestPairingCode(num + '@s.whatsapp.net');
+        console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('✅ PAIRING CODE READY!');
+        console.log('');
+        console.log('   Number : +' + num);
+        console.log('   Code   : ' + pairCode);
+        console.log('');
+        console.log('Steps:');
+        console.log('  1. Open WhatsApp on that phone');
+        console.log('  2. Menu → Linked Devices → Link a Device');
+        console.log('  3. Tap "Link with phone number instead"');
+        console.log('  4. Enter the code above');
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+      } catch(e) {
+        console.log('\n❌ Could not generate code: ' + e.message);
+        console.log('Make sure the number is registered on WhatsApp\n');
+      }
+    });
+  }
+
   sock.ev.on('connection.update', async function(update) {
     var connection = update.connection, lastDisconnect = update.lastDisconnect, qr = update.qr;
     if (qr) {
@@ -564,23 +605,10 @@ async function startBot() {
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
       qrcode.generate(qr, { small: true });
 
-      // Also show pairing code if phone number is set
-      if (!pairingShown && CONFIG.OWNER_NUMBER) {
+      // Prompt for pairing number once
+      if (!pairingShown) {
         pairingShown = true;
-        try {
-          var pairCode = await sock.requestPairingCode(CONFIG.OWNER_NUMBER + '@s.whatsapp.net');
-          console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-          console.log('🔑 OPTION 2 — Pairing Code:');
-          console.log('');
-          console.log('   Number : +' + CONFIG.OWNER_NUMBER);
-          console.log('   Code   : ' + pairCode);
-          console.log('');
-          console.log('Steps: WhatsApp → Linked Devices → Link a Device');
-          console.log('       → Link with phone number instead → Enter code');
-          console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-        } catch(e) {
-          console.log('\n⚠️  Pairing code not available yet — use QR code above');
-        }
+        setTimeout(function() { promptPairingNumber(sock); }, 1000);
       }
     }
     if (connection === 'close') {
