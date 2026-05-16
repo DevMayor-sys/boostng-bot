@@ -126,6 +126,51 @@ function hasCircularRef(obj, seen, depth) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BAILEYS / WHATSAPP MESSAGE NORMALIZER
+// WHY: Modern interactive messages use multiple payload formats
+// ═══════════════════════════════════════════════════════════════════════════════
+function normalizeWhatsAppMessage(msg) {
+  if (!msg || typeof msg !== 'object') return msg;
+
+  try {
+    // interactiveResponseMessage
+    if (msg.interactiveResponseMessage) {
+      msg.conversation =
+        msg.interactiveResponseMessage?.body?.text ||
+        msg.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson ||
+        '';
+    }
+
+    // buttonsResponseMessage
+    if (msg.buttonsResponseMessage) {
+      msg.conversation =
+        msg.buttonsResponseMessage?.selectedDisplayText ||
+        msg.buttonsResponseMessage?.selectedButtonId ||
+        '';
+    }
+
+    // listResponseMessage
+    if (msg.listResponseMessage) {
+      msg.conversation =
+        msg.listResponseMessage?.title ||
+        msg.listResponseMessage?.singleSelectReply?.selectedRowId ||
+        '';
+    }
+
+    // templateButtonReplyMessage
+    if (msg.templateButtonReplyMessage) {
+      msg.conversation =
+        msg.templateButtonReplyMessage?.selectedDisplayText ||
+        msg.templateButtonReplyMessage?.selectedId ||
+        '';
+    }
+  } catch(e) {}
+
+  return msg;
+}
+
 // PAYLOAD SIZE ESTIMATOR — fast, no full serialization
 // WHY: JSON.stringify on a large object is a DoS vector itself
 // ═══════════════════════════════════════════════════════════════════════════════
