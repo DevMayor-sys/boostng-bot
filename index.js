@@ -554,9 +554,35 @@ async function startBot() {
 
   sock.ev.on('creds.update', saveCreds);
 
+  // Generate pairing code as soon as socket is ready
+  var pairingShown = false;
   sock.ev.on('connection.update', async function(update) {
     var connection = update.connection, lastDisconnect = update.lastDisconnect, qr = update.qr;
-    if (qr) { console.log('\n📱 Scan QR:\n'); qrcode.generate(qr, { small: true }); }
+    if (qr) {
+      console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('📱 OPTION 1 — Scan QR Code:');
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+      qrcode.generate(qr, { small: true });
+
+      // Also show pairing code if phone number is set
+      if (!pairingShown && CONFIG.OWNER_NUMBER) {
+        pairingShown = true;
+        try {
+          var pairCode = await sock.requestPairingCode(CONFIG.OWNER_NUMBER + '@s.whatsapp.net');
+          console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+          console.log('🔑 OPTION 2 — Pairing Code:');
+          console.log('');
+          console.log('   Number : +' + CONFIG.OWNER_NUMBER);
+          console.log('   Code   : ' + pairCode);
+          console.log('');
+          console.log('Steps: WhatsApp → Linked Devices → Link a Device');
+          console.log('       → Link with phone number instead → Enter code');
+          console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+        } catch(e) {
+          console.log('\n⚠️  Pairing code not available yet — use QR code above');
+        }
+      }
+    }
     if (connection === 'close') {
       var code = lastDisconnect && lastDisconnect.error && lastDisconnect.error.output ? lastDisconnect.error.output.statusCode : 0;
       if (code !== DisconnectReason.loggedOut) { console.log('[Bot] Reconnecting...'); setTimeout(startBot, 5000); }
