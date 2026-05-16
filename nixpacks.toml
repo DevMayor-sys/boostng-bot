@@ -1,0 +1,8 @@
+[phases.build]
+cmds = ["npm install"]
+
+[phases.deploy]
+cmds = ["node index.js"]
+
+[variables]
+NODE_ENV = "production"
