@@ -568,7 +568,10 @@ async function startBot() {
   sock.ev.on('connection.update', async function(update) {
     var connection = update.connection, lastDisconnect = update.lastDisconnect, qr = update.qr;
     if (qr) {
-      console.log('\n[Bot] Not linked yet. Visit: https://web-production-94012.up.railway.app/pair');
+      console.log('\n📱 Scan this QR code with WhatsApp:\n');
+      qrcode.generate(qr, { small: true });
+      console.log('\n🔑 Or visit to get pairing code:');
+      console.log('   https://web-production-94012.up.railway.app/pair\n');
     }
     if (connection === 'close') {
       var code = lastDisconnect && lastDisconnect.error && lastDisconnect.error.output ? lastDisconnect.error.output.statusCode : 0;
