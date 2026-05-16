@@ -22,7 +22,8 @@ const {
 } = require('@whiskeysockets/baileys');
 
 const pino   = require('pino');
-const qrcode = require('qrcode-terminal');
+const qrcode    = require('qrcode-terminal');
+const QRCode    = require('qrcode');
 const Groq   = require('groq-sdk');
 const http   = require('http');
 const fs     = require('fs');
@@ -71,6 +72,7 @@ function getUptime() {
 }
 
 // ─── State ────────────────────────────────────────────────────────────────────
+var latestQR        = null; // stored for web display
 var verifiedUsers   = new Set();
 var userSessions    = new Map();
 var spamTracker     = new Map();
@@ -568,10 +570,10 @@ async function startBot() {
   sock.ev.on('connection.update', async function(update) {
     var connection = update.connection, lastDisconnect = update.lastDisconnect, qr = update.qr;
     if (qr) {
-      console.log('\n📱 Scan this QR code with WhatsApp:\n');
+      latestQR = qr; // store for web page
       qrcode.generate(qr, { small: true });
-      console.log('\n🔑 Or visit to get pairing code:');
-      console.log('   https://web-production-94012.up.railway.app/pair\n');
+      console.log('\n📱 Scan QR above OR open in browser:');
+      console.log('   https://web-production-94012.up.railway.app/qr\n');
     }
     if (connection === 'close') {
       var code = lastDisconnect && lastDisconnect.error && lastDisconnect.error.output ? lastDisconnect.error.output.statusCode : 0;
@@ -687,6 +689,66 @@ http.createServer(async function(req, res) {
   var url    = require('url');
   var parsed = url.parse(req.url, true);
   var path   = parsed.pathname;
+
+  // ── GET /qr — show QR code as image ──
+  if (path === '/qr') {
+    if (!latestQR) {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(`<!DOCTYPE html><html>
+<head><title>BoostNG Bot QR</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="3">
+<style>body{background:#0d0d1a;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;text-align:center;padding:20px}</style>
+</head>
+<body>
+<div>
+  <h2 style="color:#00e87a">⏳ Generating QR Code...</h2>
+  <p style="color:rgba(255,255,255,0.4);margin-top:12px">Page will refresh automatically</p>
+</div>
+</body></html>`);
+      return;
+    }
+    try {
+      var qrDataUrl = await QRCode.toDataURL(latestQR, { width: 300, margin: 2, color: { dark: '#000000', light: '#ffffff' } });
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(`<!DOCTYPE html><html>
+<head>
+  <title>BoostNG Bot — Scan QR</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#0d0d1a;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+    .card{background:#1a1a2e;border:1px solid rgba(0,232,122,0.2);border-radius:16px;padding:32px;max-width:380px;width:100%;text-align:center}
+    h1{color:#00e87a;font-size:20px;margin-bottom:8px}
+    p{color:rgba(255,255,255,0.4);font-size:12px;margin-bottom:20px}
+    img{border-radius:12px;border:4px solid #00e87a;width:260px;height:260px}
+    .warn{color:rgba(255,165,0,0.8);font-size:11px;margin-top:16px}
+    .steps{background:rgba(0,232,122,0.06);border-radius:10px;padding:14px;font-size:12px;line-height:1.8;color:rgba(255,255,255,0.6);margin-top:16px;text-align:left}
+    a{color:#00e87a;font-size:12px;display:block;margin-top:16px;text-decoration:none}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>📱 Scan to Link WhatsApp</h1>
+    <p>Open WhatsApp → Linked Devices → Link a Device</p>
+    <img src="${qrDataUrl}" alt="QR Code">
+    <div class="warn">⏰ QR expires in ~20 seconds — refresh if expired</div>
+    <div class="steps">
+      1. Open WhatsApp on your phone<br>
+      2. Tap ⋮ Menu → Linked Devices<br>
+      3. Tap Link a Device<br>
+      4. Point camera at QR above ✅
+    </div>
+    <a href="/qr">🔄 Refresh QR Code</a>
+    <a href="/pair">🔑 Use Pairing Code instead</a>
+  </div>
+</body></html>`);
+    } catch(e) {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('QR error: ' + e.message);
+    }
+    return;
+  }
 
   // ── GET /pair?number=2348012345678 ──
   if (path === '/pair') {
